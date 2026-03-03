@@ -8,6 +8,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { TOOL_CATEGORIES } from './tool-categories.js';
+import { filterSensitivityLabels, getBlockedSensitivityLabels } from './sensitivity-filter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -386,6 +387,21 @@ async function executeGraphTool(
         }
       } catch {
         // Non-JSON response
+      }
+    }
+
+    // Apply sensitivity label filtering before returning
+    const blockedLabels = getBlockedSensitivityLabels();
+    if (blockedLabels.length > 0 && response?.content?.[0]?.text) {
+      try {
+        const responseData = JSON.parse(response.content[0].text);
+        const { data: filtered, filteredCount, wasBlocked } = filterSensitivityLabels(responseData, blockedLabels);
+        if (filteredCount > 0 || wasBlocked) {
+          logger.warn(`Sensitivity filter: removed ${filteredCount} restricted item(s) from response for tool ${tool.alias}`);
+          response.content[0].text = JSON.stringify(filtered, null, 2);
+        }
+      } catch (e) {
+        logger.error(`Error applying sensitivity filter for tool ${tool.alias}: ${e}`);
       }
     }
 

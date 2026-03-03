@@ -52,6 +52,10 @@ program
   .option(
     '--enable-dynamic-registration',
     'Enable OAuth Dynamic Client Registration endpoint (required for some MCP clients like Open WebUI)'
+  )
+  .option(
+    '--blocked-sensitivity-labels <labels>',
+    'Comma-separated list of sensitivity label names to filter from responses (e.g., "Restricted Confidential"). Also configurable via MS365_MCP_BLOCKED_SENSITIVITY_LABELS env var.'
   );
 
 export interface CommandOptions {
@@ -75,6 +79,7 @@ export interface CommandOptions {
   discovery?: boolean;
   cloud?: string;
   enableDynamicRegistration?: boolean;
+  blockedSensitivityLabels?: string;
 
   [key: string]: unknown;
 }
@@ -136,6 +141,13 @@ export function parseArgs(): CommandOptions {
   // Handle cloud type - CLI option takes precedence over environment variable
   if (options.cloud) {
     process.env.MS365_MCP_CLOUD_TYPE = options.cloud;
+  }
+
+  // Blocked sensitivity labels: CLI takes precedence, then env var
+  if (options.blockedSensitivityLabels) {
+    process.env.MS365_MCP_BLOCKED_SENSITIVITY_LABELS = options.blockedSensitivityLabels;
+  } else if (process.env.MS365_MCP_BLOCKED_SENSITIVITY_LABELS) {
+    options.blockedSensitivityLabels = process.env.MS365_MCP_BLOCKED_SENSITIVITY_LABELS;
   }
 
   return options;
