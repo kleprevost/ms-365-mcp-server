@@ -574,6 +574,107 @@ export function registerGraphTools(
   // Layer 3 (list-accounts tool) is registered by registerAuthTools in auth-tools.ts.
   // It is the canonical owner of account discovery — no duplicate registration here.
 
+  // Register the get-current-datetime utility tool
+  const currentDatetimeSchema: Record<string, z.ZodTypeAny> = {};
+  if (multiAccount) {
+    const accountHint =
+      accountNames.length > 0 ? `Known accounts: ${accountNames.join(', ')}. ` : '';
+    currentDatetimeSchema['account'] = z
+      .string()
+      .describe(
+        `${accountHint}Microsoft account email to use for this request. ` +
+          `Required when multiple accounts are configured. ` +
+          `Use the list-accounts tool to discover all currently available accounts.`
+      )
+      .optional();
+  }
+
+  server.tool(
+    'get-current-datetime',
+    "Returns the current date and time in the user's configured timezone (from their Microsoft 365 mailbox settings). Falls back to UTC if the timezone cannot be determined.",
+    currentDatetimeSchema,
+    {
+      title: 'get-current-datetime',
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
+    async (params) => {
+      let timezone = 'UTC';
+      let timezoneSource = 'fallback';
+
+      try {
+        let accountAccessToken: string | undefined;
+        if (authManager && !authManager.isOAuthModeEnabled()) {
+          const accountParam = (params as Record<string, unknown>).account as string | undefined;
+          try {
+            accountAccessToken = await authManager.getTokenForAccount(accountParam);
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({ error: (err as Error).message }),
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+
+        const mailboxSettings = (await graphClient.makeRequest('/me/mailboxSettings', {
+          accessToken: accountAccessToken,
+        })) as Record<string, unknown>;
+
+        const rawTimezone = mailboxSettings?.timeZone as string | undefined;
+        if (rawTimezone) {
+          // Validate it's a usable IANA timezone by testing with Intl
+          try {
+            Intl.DateTimeFormat(undefined, { timeZone: rawTimezone });
+            timezone = rawTimezone;
+            timezoneSource = 'mailboxSettings';
+          } catch {
+            logger.warn(
+              `get-current-datetime: mailbox timezone "${rawTimezone}" is not a valid IANA timezone, falling back to UTC`
+            );
+          }
+        }
+      } catch (err) {
+        logger.warn(`get-current-datetime: failed to fetch mailbox settings: ${(err as Error).message}`);
+      }
+
+      const now = new Date();
+      const formatted = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+        timeZoneName: 'long',
+      }).format(now);
+
+      const iso = now.toISOString();
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              datetime: formatted,
+              iso8601: iso,
+              timezone,
+              timezoneSource,
+            }),
+          },
+        ],
+      };
+    }
+  );
+  registeredCount++;
+
   logger.info(
     `Tool registration complete: ${registeredCount} registered, ${skippedCount} skipped, ${failedCount} failed`
   );
