@@ -20,6 +20,24 @@ export function getBlockedSensitivityLabels(): string[] {
 }
 
 /**
+ * Returns true if untagged documents (those with no sensitivityLabel) should be blocked.
+ * Controlled by the MS365_MCP_BLOCK_UNTAGGED_DOCUMENTS environment variable.
+ */
+export function getBlockUntagged(): boolean {
+  const envValue = process.env.MS365_MCP_BLOCK_UNTAGGED_DOCUMENTS;
+  return envValue === 'true' || envValue === '1';
+}
+
+/**
+ * Returns true if the item has no meaningful sensitivity label.
+ */
+function isUntagged(sensitivityLabel: unknown): boolean {
+  if (!sensitivityLabel || typeof sensitivityLabel !== 'object') return true;
+  const label = sensitivityLabel as Record<string, unknown>;
+  return typeof label.displayName !== 'string' || label.displayName.trim() === '';
+}
+
+/**
  * Returns true if a sensitivityLabel object's displayName matches any blocked label
  * (case-insensitive).
  */
@@ -37,7 +55,8 @@ function isBlockedLabel(sensitivityLabel: unknown, blockedLabels: string[]): boo
  */
 function filterSearchQueryResults(
   data: Record<string, unknown>,
-  blockedLabels: string[]
+  blockedLabels: string[],
+  blockUntagged: boolean
 ): { data: Record<string, unknown>; filteredCount: number } {
   let filteredCount = 0;
 
@@ -60,7 +79,14 @@ function filterSearchQueryResults(
         if (!hit || typeof hit !== 'object') return true;
         const hitObj = hit as Record<string, unknown>;
         const resource = hitObj.resource as Record<string, unknown> | undefined;
-        if (!resource) return true;
+        if (!resource) return !blockUntagged;
+
+        if (blockUntagged && isUntagged(resource.sensitivityLabel)) {
+          logger.warn(
+            `Sensitivity filter: blocked untagged search hit "${resource.name || resource.id}"`
+          );
+          return false;
+        }
 
         if (isBlockedLabel(resource.sensitivityLabel, blockedLabels)) {
           const label = (resource.sensitivityLabel as Record<string, unknown>).displayName;
@@ -88,7 +114,8 @@ function filterSearchQueryResults(
  */
 function filterListResults(
   data: Record<string, unknown>,
-  blockedLabels: string[]
+  blockedLabels: string[],
+  blockUntagged: boolean
 ): { data: Record<string, unknown>; filteredCount: number } {
   let filteredCount = 0;
 
@@ -96,8 +123,15 @@ function filterListResults(
 
   const originalCount = data.value.length;
   const filteredValue = data.value.filter((item: unknown) => {
-    if (!item || typeof item !== 'object') return true;
+    if (!item || typeof item !== 'object') return !blockUntagged;
     const itemObj = item as Record<string, unknown>;
+
+    if (blockUntagged && isUntagged(itemObj.sensitivityLabel)) {
+      logger.warn(
+        `Sensitivity filter: blocked untagged list item "${itemObj.name || itemObj.id}"`
+      );
+      return false;
+    }
 
     if (isBlockedLabel(itemObj.sensitivityLabel, blockedLabels)) {
       const label = (itemObj.sensitivityLabel as Record<string, unknown>).displayName;
@@ -121,16 +155,35 @@ function filterListResults(
  *   2. List responses — value[].sensitivityLabel
  *   3. Single-item   — top-level sensitivityLabel
  *
- * Items without a sensitivityLabel field pass through (fail-open).
+ * When blockUntagged is true, items without a sensitivityLabel are also blocked (fail-closed).
+ * Otherwise, items without a sensitivityLabel pass through (fail-open).
  */
-export function filterSensitivityLabels(data: unknown, blockedLabels: string[]): FilterResult {
-  if (!data || typeof data !== 'object' || blockedLabels.length === 0) {
+export function filterSensitivityLabels(
+  data: unknown,
+  blockedLabels: string[],
+  blockUntagged = false
+): FilterResult {
+  if (!data || typeof data !== 'object' || (blockedLabels.length === 0 && !blockUntagged)) {
     return { data, filteredCount: 0, wasBlocked: false };
   }
 
   const obj = data as Record<string, unknown>;
 
-  // Single-item response: top-level sensitivityLabel is blocked
+  // Single-item response: block if untagged or label is blocked
+  if (blockUntagged && isUntagged(obj.sensitivityLabel)) {
+    logger.warn(
+      `Sensitivity filter: blocked untagged single item "${obj.name || obj.id}"`
+    );
+    return {
+      data: {
+        error:
+          'This item has no sensitivity label and cannot be accessed through this interface.',
+      },
+      filteredCount: 1,
+      wasBlocked: true,
+    };
+  }
+
   if (isBlockedLabel(obj.sensitivityLabel, blockedLabels)) {
     const label = (obj.sensitivityLabel as Record<string, unknown>).displayName;
     logger.warn(
@@ -154,13 +207,13 @@ export function filterSensitivityLabels(data: unknown, blockedLabels: string[]):
     obj.value[0] !== null &&
     'hitsContainers' in (obj.value[0] as object)
   ) {
-    const { data: filtered, filteredCount } = filterSearchQueryResults(obj, blockedLabels);
+    const { data: filtered, filteredCount } = filterSearchQueryResults(obj, blockedLabels, blockUntagged);
     return { data: filtered, filteredCount, wasBlocked: false };
   }
 
   // List response: value[]
   if (Array.isArray(obj.value)) {
-    const { data: filtered, filteredCount } = filterListResults(obj, blockedLabels);
+    const { data: filtered, filteredCount } = filterListResults(obj, blockedLabels, blockUntagged);
     return { data: filtered, filteredCount, wasBlocked: false };
   }
 

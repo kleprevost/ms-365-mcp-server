@@ -8,7 +8,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { TOOL_CATEGORIES } from './tool-categories.js';
-import { filterSensitivityLabels, getBlockedSensitivityLabels } from './sensitivity-filter.js';
+import { filterSensitivityLabels, getBlockedSensitivityLabels, getBlockUntagged } from './sensitivity-filter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -392,10 +392,11 @@ async function executeGraphTool(
 
     // Apply sensitivity label filtering before returning
     const blockedLabels = getBlockedSensitivityLabels();
-    if (blockedLabels.length > 0 && response?.content?.[0]?.text) {
+    const blockUntagged = getBlockUntagged();
+    if ((blockedLabels.length > 0 || blockUntagged) && response?.content?.[0]?.text) {
       try {
         const responseData = JSON.parse(response.content[0].text);
-        const { data: filtered, filteredCount, wasBlocked } = filterSensitivityLabels(responseData, blockedLabels);
+        const { data: filtered, filteredCount, wasBlocked } = filterSensitivityLabels(responseData, blockedLabels, blockUntagged);
         if (filteredCount > 0 || wasBlocked) {
           logger.warn(`Sensitivity filter: removed ${filteredCount} restricted item(s) from response for tool ${tool.alias}`);
           response.content[0].text = JSON.stringify(filtered, null, 2);
